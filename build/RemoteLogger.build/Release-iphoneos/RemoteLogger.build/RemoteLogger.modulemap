@@ -1,0 +1,4 @@
+module RemoteLogger {
+header "RemoteLogger-Swift.h"
+export *
+}

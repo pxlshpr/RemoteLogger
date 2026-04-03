@@ -28,12 +28,20 @@ public final class RemoteLogger: Sendable {
     private static let _appName = ManagedAtomic<String?>(nil)
 
     /// Configure the logger with an app name. Call once at app startup.
-    public static func configure(app: String, host: String? = nil, port: Int? = nil) {
+    ///
+    /// - Parameters:
+    ///   - app: App name sent with every log entry.
+    ///   - host: Override the default Tailscale IP.
+    ///   - port: Override the default port.
+    ///   - baseURL: Full base URL (e.g. "https://host.ts.net"). When set, host/port are ignored.
+    public static func configure(app: String, host: String? = nil, port: Int? = nil, baseURL: String? = nil) {
         _appName.store(app)
+        if let baseURL { shared._overrideBaseURL.store(baseURL) }
         if let host { shared._overrideHost.store(host) }
         if let port { shared._overridePort.store(port) }
     }
 
+    private let _overrideBaseURL = ManagedAtomic<String?>(nil)
     private let _overrideHost = ManagedAtomic<String?>(nil)
     private let _overridePort = ManagedAtomic<Int?>(nil)
 
@@ -83,7 +91,13 @@ public final class RemoteLogger: Sendable {
 
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
 
-        var request = URLRequest(url: URL(string: "http://\(effectiveHost):\(effectivePort)/log")!)
+        let urlString: String
+        if let base = _overrideBaseURL.load() {
+            urlString = "\(base)/log"
+        } else {
+            urlString = "http://\(effectiveHost):\(effectivePort)/log"
+        }
+        var request = URLRequest(url: URL(string: urlString)!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body

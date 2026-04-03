@@ -1,0 +1,19 @@
+{
+  "" : {
+    "diagnostics" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger-primary.dia",
+    "emit-module-dependencies" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger-primary-emit-module.dia",
+    "pch" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger-primary.swiftdeps"
+  },
+  "/Users/pxlshpr/Developer/Packages/RemoteLogger/Sources/RemoteLogger/RemoteLogger.swift" : {
+    "const-values" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger.swiftconstvalues",
+    "dependencies" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger.d",
+    "diagnostics" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger.dia",
+    "index-unit-output-path" : "/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger.o",
+    "llvm-bc" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger.bc",
+    "object" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger.o",
+    "swift-dependencies" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger.swiftdeps",
+    "swiftmodule" : "/Users/pxlshpr/Developer/Packages/RemoteLogger/build/RemoteLogger.build/Debug-iphoneos/RemoteLogger.build/Objects-normal/arm64/RemoteLogger~partial.swiftmodule"
+  }
+}
