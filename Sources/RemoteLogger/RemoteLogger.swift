@@ -23,6 +23,8 @@ public final class RemoteLogger: Sendable {
 
     private let session: URLSession
     private let osLog = Logger(subsystem: "com.pxlshpr.remote-logger", category: "remote-logger")
+    /// Cached — `ISO8601DateFormatter` is documented thread-safe for formatting and expensive to construct.
+    nonisolated(unsafe) private let iso8601 = ISO8601DateFormatter()
 
     /// App name sent with every log entry. Set via `configure(app:)`.
     private static let _appName = ManagedAtomic<String?>(nil)
@@ -78,7 +80,7 @@ public final class RemoteLogger: Sendable {
 
     private func send(level: String, message: String, category: String, extra: [String: String]) {
         var payload: [String: Any] = [
-            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "timestamp": iso8601.string(from: Date()),
             "level": level,
             "category": category,
             "message": message,
