@@ -16,7 +16,8 @@ import json
 import os
 import sys
 from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from threading import Lock
 from pathlib import Path
 
 PORT = 9876
@@ -61,6 +62,12 @@ CAT_COLORS = {
 class LogHandler(BaseHTTPRequestHandler):
     log_dir = DEFAULT_LOG_DIR
     _file_handles = {}  # app_name -> file handle
+    # Guard concurrent writes / handle creation now that the server runs each
+    # request on its own thread (ThreadingHTTPServer). Without this, two
+    # threads can race on the file-handle dict or interleave bytes inside a
+    # single log line.
+    _file_lock = Lock()
+    _print_lock = Lock()
 
     def do_POST(self):
         if self.path.startswith("/log"):
@@ -119,22 +126,22 @@ class LogHandler(BaseHTTPRequestHandler):
         cat_tag = f"[{category}]" if category else ""
         app_tag = f"[{app}]".ljust(13)
 
-        print(
+        line = (
             f"{DIM}{time_str}{RESET} "
             f"{app_color}{app_tag}{RESET} "
             f"{color}{level_tag}{RESET} "
             f"{cat_color}{cat_tag}{RESET} "
-            f"{message}",
-            end=""
+            f"{message}"
         )
-
         if extra:
             pairs = " ".join(f"{k}={v}" for k, v in extra.items())
-            print(f"  {DIM}{pairs}{RESET}")
-        else:
-            print()
+            line = f"{line}  {DIM}{pairs}{RESET}"
 
-        sys.stdout.flush()
+        # Hold the lock across the print + flush so threads don't interleave
+        # halves of one log line in the terminal.
+        with self._print_lock:
+            print(line)
+            sys.stdout.flush()
 
     def _write_to_file(self, entry, app):
         """Write a plain-text log line to the per-app log file."""
@@ -160,20 +167,25 @@ class LogHandler(BaseHTTPRequestHandler):
             extra_str = "  " + " ".join(f"{k}={v}" for k, v in extra.items())
 
         line = f"{time_str} {level} {cat_tag}{message}{extra_str}\n"
-        fh.write(line)
-        fh.flush()
+        # One write+flush per line under the lock so concurrent requests
+        # never interleave bytes inside a single log line.
+        with self._file_lock:
+            fh.write(line)
+            fh.flush()
 
     def _get_file_handle(self, app):
-        if app not in self._file_handles:
-            app_dir = os.path.join(self.log_dir, app)
-            os.makedirs(app_dir, exist_ok=True)
-            log_path = os.path.join(app_dir, "remote-logs.txt")
-            try:
-                self._file_handles[app] = open(log_path, "a")
-            except IOError as e:
-                print(f"  [ERROR] Cannot open log file for {app}: {e}")
-                return None
-        return self._file_handles[app]
+        # `open()` and the dict mutation must be atomic under threading.
+        with self._file_lock:
+            if app not in self._file_handles:
+                app_dir = os.path.join(self.log_dir, app)
+                os.makedirs(app_dir, exist_ok=True)
+                log_path = os.path.join(app_dir, "remote-logs.txt")
+                try:
+                    self._file_handles[app] = open(log_path, "a")
+                except IOError as e:
+                    print(f"  [ERROR] Cannot open log file for {app}: {e}")
+                    return None
+            return self._file_handles[app]
 
     def _serve_logs(self):
         """GET /logs/<app>?lines=100 — serve recent log lines."""
@@ -223,7 +235,18 @@ def main():
     LogHandler.log_dir = args.log_dir
     os.makedirs(args.log_dir, exist_ok=True)
 
-    server = HTTPServer(("0.0.0.0", args.port), LogHandler)
+    # ThreadingHTTPServer spawns a thread per request so a burst of POSTs
+    # from one app (e.g. picker open: viewDidLoad → viewDidAppear → multiple
+    # viewDidLayoutSubviews → updateUIViewController in a few hundred ms)
+    # doesn't overflow the OS socket backlog and silently drop connections.
+    server = ThreadingHTTPServer(("0.0.0.0", args.port), LogHandler)
+    # Don't let a connected client block server shutdown forever.
+    server.daemon_threads = True
+    # Bump the listen backlog above the default 5 so a sudden spike of
+    # concurrent connections (each iOS log = its own TCP connection because
+    # RemoteLogger uses an ephemeral URLSession) gets queued instead of
+    # refused at the SYN-ACK layer before any thread can accept it.
+    server.request_queue_size = 128
     print(f"{BOLD}Unified Remote Log Server{RESET}")
     print(f"Listening on 0.0.0.0:{args.port}")
     print(f"Log directory: {args.log_dir}")
