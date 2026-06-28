@@ -14,6 +14,7 @@ Run:
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -99,12 +100,36 @@ class LogHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # suppress default HTTP logging
 
+    @staticmethod
+    def _field(entry, key, default):
+        """Read a routing field (device/branch) — top-level wins, then `extra`, then the default.
+        Blank/whitespace values fall back to the default so missing fields never produce an empty
+        path segment."""
+        val = entry.get(key)
+        if val is None:
+            val = (entry.get("extra") or {}).get(key)
+        val = str(val).strip() if val is not None else ""
+        return val or default
+
+    @staticmethod
+    def _safe(segment):
+        """Restrict a path segment to filename-safe characters (the device id / branch tag come
+        from the client, so don't let them escape the log dir or break the bracket naming)."""
+        return re.sub(r"[^A-Za-z0-9._-]", "_", segment)
+
+    def _split_filename(self, app, device, branch):
+        """Per-device + per-branch log filename: `[app][device][branch].log` — so one task's logs on
+        one device are trivially isolatable from concurrent work on other branches/devices."""
+        return f"[{self._safe(app)}][{self._safe(device)}][{self._safe(branch)}].log"
+
     def _handle_log(self, entry):
         app = entry.get("app", "NutriKit")
-        self._print_log(entry, app)
-        self._write_to_file(entry, app)
+        device = self._field(entry, "device", "unknown")
+        branch = self._field(entry, "branch", "main")
+        self._print_log(entry, app, device, branch)
+        self._write_to_file(entry, app, device, branch)
 
-    def _print_log(self, entry, app):
+    def _print_log(self, entry, app, device, branch):
         ts = entry.get("timestamp", "")
         level = entry.get("level", "info").lower()
         category = entry.get("category", "")
@@ -125,10 +150,16 @@ class LogHandler(BaseHTTPRequestHandler):
         level_tag = level.upper().ljust(5)
         cat_tag = f"[{category}]" if category else ""
         app_tag = f"[{app}]".ljust(13)
+        # Only surface the device/branch segment when the client actually sent one, so legacy apps
+        # that don't (KanbanSync, Spare, older builds) keep their clean single-column output.
+        id_seg = ""
+        if device != "unknown" or branch != "main":
+            id_seg = f"{DIM}[{device}/{branch}]{RESET} "
 
         line = (
             f"{DIM}{time_str}{RESET} "
             f"{app_color}{app_tag}{RESET} "
+            f"{id_seg}"
             f"{color}{level_tag}{RESET} "
             f"{cat_color}{cat_tag}{RESET} "
             f"{message}"
@@ -143,12 +174,13 @@ class LogHandler(BaseHTTPRequestHandler):
             print(line)
             sys.stdout.flush()
 
-    def _write_to_file(self, entry, app):
-        """Write a plain-text log line to the per-app log file."""
-        fh = self._get_file_handle(app)
-        if not fh:
-            return
+    def _write_to_file(self, entry, app, device, branch):
+        """Write a plain-text log line to BOTH the per-device/per-branch split file
+        (`<app>/[app][device][branch].log`) and the legacy combined `<app>/remote-logs.txt`.
 
+        The split file is the #2011 isolation feature (one task on one device, on its own). The
+        combined file is kept for backward compatibility — the `search-logs`/stress-test flows and
+        existing muscle memory still read `<app>/remote-logs.txt`."""
         ts = entry.get("timestamp", "")
         level = entry.get("level", "info").upper().ljust(5)
         category = entry.get("category", "")
@@ -167,28 +199,37 @@ class LogHandler(BaseHTTPRequestHandler):
             extra_str = "  " + " ".join(f"{k}={v}" for k, v in extra.items())
 
         line = f"{time_str} {level} {cat_tag}{message}{extra_str}\n"
+        app_dir = os.path.join(self.log_dir, self._safe(app))
+        combined_path = os.path.join(app_dir, "remote-logs.txt")
+        split_path = os.path.join(app_dir, self._split_filename(app, device, branch))
+
         # One write+flush per line under the lock so concurrent requests
         # never interleave bytes inside a single log line.
         with self._file_lock:
-            fh.write(line)
-            fh.flush()
+            for path in (split_path, combined_path):
+                fh = self._handle_for_path(path)
+                if fh:
+                    fh.write(line)
+                    fh.flush()
 
-    def _get_file_handle(self, app):
-        # `open()` and the dict mutation must be atomic under threading.
-        with self._file_lock:
-            if app not in self._file_handles:
-                app_dir = os.path.join(self.log_dir, app)
-                os.makedirs(app_dir, exist_ok=True)
-                log_path = os.path.join(app_dir, "remote-logs.txt")
-                try:
-                    self._file_handles[app] = open(log_path, "a")
-                except IOError as e:
-                    print(f"  [ERROR] Cannot open log file for {app}: {e}")
-                    return None
-            return self._file_handles[app]
+    def _handle_for_path(self, path):
+        """Return a cached append handle for `path`, opening (and creating the parent dir) on first
+        use. Caller must hold `_file_lock`."""
+        fh = self._file_handles.get(path)
+        if fh is None:
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                fh = open(path, "a")
+                self._file_handles[path] = fh
+            except IOError as e:
+                print(f"  [ERROR] Cannot open log file {path}: {e}")
+                return None
+        return fh
 
     def _serve_logs(self):
-        """GET /logs/<app>?lines=100 — serve recent log lines."""
+        """GET /logs/<app>?lines=100 — serve recent log lines from the combined file.
+        GET /logs/<app>?device=<d>&branch=<b>&lines=100 — serve a specific per-device/per-branch
+        split file instead (both device and branch must be given to select a split)."""
         parts = self.path.split("/")
         if len(parts) < 3:
             self.send_response(400)
@@ -196,24 +237,36 @@ class LogHandler(BaseHTTPRequestHandler):
             return
 
         app = parts[2].split("?")[0]
-        log_path = os.path.join(self.log_dir, app, "remote-logs.txt")
+
+        # Parse query (?lines=N, ?device=, ?branch=)
+        lines = 100
+        device = None
+        branch = None
+        if "?" in self.path:
+            query = self.path.split("?", 1)[1]
+            for param in query.split("&"):
+                if param.startswith("lines="):
+                    try:
+                        lines = int(param.split("=", 1)[1])
+                    except ValueError:
+                        pass
+                elif param.startswith("device="):
+                    device = param.split("=", 1)[1] or None
+                elif param.startswith("branch="):
+                    branch = param.split("=", 1)[1] or None
+
+        # device+branch selects the split file; otherwise the combined file.
+        if device is not None and branch is not None:
+            filename = self._split_filename(app, device, branch)
+        else:
+            filename = "remote-logs.txt"
+        log_path = os.path.join(self.log_dir, self._safe(app), filename)
 
         if not os.path.exists(log_path):
             self.send_response(404)
             self.end_headers()
-            self.wfile.write(f"No logs for {app}".encode())
+            self.wfile.write(f"No logs at {filename} for {app}".encode())
             return
-
-        # Parse ?lines=N (default 100)
-        lines = 100
-        if "?" in self.path:
-            query = self.path.split("?")[1]
-            for param in query.split("&"):
-                if param.startswith("lines="):
-                    try:
-                        lines = int(param.split("=")[1])
-                    except ValueError:
-                        pass
 
         with open(log_path, "r") as f:
             all_lines = f.readlines()
@@ -250,8 +303,9 @@ def main():
     print(f"{BOLD}Unified Remote Log Server{RESET}")
     print(f"Listening on 0.0.0.0:{args.port}")
     print(f"Log directory: {args.log_dir}")
-    print(f"Per-app logs: {args.log_dir}/<AppName>/remote-logs.txt")
-    print(f"Read logs: GET /logs/<AppName>?lines=100")
+    print(f"Combined logs:  {args.log_dir}/<AppName>/remote-logs.txt")
+    print(f"Per-dev/branch: {args.log_dir}/<AppName>/[<AppName>][<device>][<branch>].log")
+    print(f"Read logs: GET /logs/<AppName>?lines=100  (add &device=<d>&branch=<b> for a split file)")
     print(f"{'─' * 60}")
     try:
         server.serve_forever()
