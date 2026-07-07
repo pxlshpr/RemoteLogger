@@ -190,8 +190,10 @@ class LogHandler(BaseHTTPRequestHandler):
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
             time_str = dt.strftime("%H:%M:%S.%f")[:-3]
+            day_str = dt.strftime("%Y-%m-%d")
         except (ValueError, AttributeError):
             time_str = ts[:12] if ts else "??:??:??"
+            day_str = ""
 
         cat_tag = f"[{category}] " if category else ""
         extra_str = ""
@@ -203,13 +205,25 @@ class LogHandler(BaseHTTPRequestHandler):
         combined_path = os.path.join(app_dir, "remote-logs.txt")
         split_path = os.path.join(app_dir, self._split_filename(app, device, branch))
 
+        targets = [(split_path, line), (combined_path, line)]
+
+        # NutriKit #2055: every CloudKit-related line (category `ck-*`) ALSO lands in one
+        # persistent aggregate at the log ROOT — outside every app dir, so branch-scoped
+        # flushes (/flushlogs) never clear it. All apps/devices/branches converge here
+        # (that's the point: long-term evidence of residue cleanups + cache regrowth
+        # across every install), so each line carries its origin and a full date.
+        if category.startswith("ck-"):
+            ck_line = (f"{day_str} {time_str} {level} "
+                       f"[{self._safe(app)}/{device}/{branch}] {cat_tag}{message}{extra_str}\n")
+            targets.append((os.path.join(self.log_dir, "cloudkit.log"), ck_line))
+
         # One write+flush per line under the lock so concurrent requests
         # never interleave bytes inside a single log line.
         with self._file_lock:
-            for path in (split_path, combined_path):
+            for path, out in targets:
                 fh = self._handle_for_path(path)
                 if fh:
-                    fh.write(line)
+                    fh.write(out)
                     fh.flush()
 
     def _handle_for_path(self, path):
