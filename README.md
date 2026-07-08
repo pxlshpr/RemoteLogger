@@ -5,15 +5,18 @@ lines to a tiny Python server (`tools/log_server.py`) running on your dev Mac; t
 color-coded in a terminal and writes them to per-app / per-device / per-branch files you can `grep`,
 `tail`, and `/logger`-manage.
 
-Two delivery paths share one configuration:
+**`ReliableRemoteLogger` is the canonical logger — reach for it in new code.** `RemoteLogger` (the
+old fire-and-forget fast path) is **deprecated**: it still compiles and runs, but the compiler now
+flags its call sites so existing usage can migrate over time. Both paths share one configuration and
+POST to the same endpoint, so migration is a drop-in swap of the type name.
 
-| | `RemoteLogger` (fast path) | `ReliableRemoteLogger` (drop-proof path) |
+| | `ReliableRemoteLogger` (canonical, drop-proof) | `RemoteLogger` (deprecated fast path) |
 |---|---|---|
-| Delivery | fire-and-forget, one POST per line, **no retry** | serialized FIFO, **retried with backoff**, never drops a line |
-| Ordering | best-effort (ephemeral session, ~6 conns/host) | strict (`seq=N` per line; single connection) |
-| On-device record | none | **file mirror** in `Caches/` (survives total network loss) |
-| Cost under a dense burst | some lines time out and are silently dropped | buffers and drains in order |
-| Use for | high-volume, drop-tolerant logging (the default) | burst-critical traces you cannot afford to lose |
+| Delivery | serialized FIFO, **retried with backoff**, never drops a line | fire-and-forget, one POST per line, **no retry** |
+| Ordering | strict (`seq=N` per line; single connection) | best-effort (ephemeral session, ~6 conns/host) |
+| On-device record | **file mirror** in `Caches/` (survives total network loss) | none |
+| Cost under a dense burst | buffers and drains in order | some lines time out and are silently dropped |
+| Status | **use this** | deprecated — migrate over time |
 
 Both POST to the **same** `/log` endpoint and carry the same `app` / `device` / `branch` identity, so
 they interleave correctly in the server logs and route to the same files.
@@ -23,7 +26,7 @@ they interleave correctly in the server logs and route to the same files.
 ## Install (Swift Package Manager)
 
 ```swift
-.package(url: "https://github.com/pxlshpr/RemoteLogger", from: "1.2.0"),
+.package(url: "https://github.com/pxlshpr/RemoteLogger", from: "1.3.0"),
 // …
 .product(name: "RemoteLogger", package: "RemoteLogger"),
 ```
@@ -35,15 +38,17 @@ Platforms: iOS 17+, macOS 14+.
 ## Configure once at startup
 
 ```swift
-RemoteLogger.configure(
+ReliableRemoteLogger.configure(
     app: "MyApp",                       // server routes per-app on this
     device: String(deviceID.prefix(8)), // optional — enables per-device routing
     branch: branchTag                   // optional — enables per-branch routing (see "Branch tagging")
 )
 ```
 
-A single `configure(...)` wires up **both** `RemoteLogger` and `ReliableRemoteLogger` (they read one
-shared `RemoteLoggerConfig`), so the endpoint and identity can never drift between the two paths.
+A single `configure(...)` wires up **both** `ReliableRemoteLogger` and the deprecated `RemoteLogger`
+(they read one shared `RemoteLoggerConfig`), so the endpoint and identity can never drift between the
+two paths. (`RemoteLogger.configure(...)` still exists but is deprecated alongside that type — prefer
+`ReliableRemoteLogger.configure(...)`.)
 
 | Parameter | Default | Notes |
 |---|---|---|
@@ -62,16 +67,19 @@ byte-compatible with the server's per-app fallback.
 ## Log
 
 ```swift
-// Fast path — the default for everyday logging:
-RemoteLogger.shared.info("Pulled 5 days", category: "sync-pull", extra: ["count": "5"])
-RemoteLogger.shared.debug(…) / .warning(…) / .error(…)
+// Canonical path — use this for everyday logging:
+ReliableRemoteLogger.shared.info("Pulled 5 days", category: "sync-pull", extra: ["count": "5"])
+ReliableRemoteLogger.shared.debug(…) / .warning(…) / .error(…)
 
-// Drop-proof path — same API, for a trace that must NOT lose a line under a burst:
+// Same API for a trace that must NOT lose a line under a burst (it's drop-proof by construction):
 ReliableRemoteLogger.shared.info("PROTECT-ADD meal=\(id)", category: "flicker-trace")
 
 // Or a dedicated instance with its own on-device mirror file for a self-contained investigation:
 let stall = ReliableRemoteLogger(mirrorFileName: "stall-2010.log")
 stall.info("HEARTBEAT", category: "stall-2010")
+
+// Deprecated fast path — still works, emits a deprecation warning, migrate to the above:
+RemoteLogger.shared.info("legacy line", category: "sync-pull")
 ```
 
 `category` drives terminal color grouping and is the usual `grep` key. `extra` is rendered as
@@ -158,7 +166,7 @@ variable substitution Xcode already runs:
        let tag = String(cloneDir[cloneDir.index(after: dash)...])
        return tag.isEmpty ? nil : tag
    }
-   RemoteLogger.configure(app: "MyApp", device: deviceTag, branch: logBranchTag())
+   ReliableRemoteLogger.configure(app: "MyApp", device: deviceTag, branch: logBranchTag())
    ```
 
 This matches how clones are named (`<project>-<task>`), so a clone on branch `1980` routes its logs
@@ -183,6 +191,11 @@ detection mirrors the app's: `branch = basename(clone dir) after the first '-'`,
 
 ## Versioning
 
+- **1.3.0** — **`ReliableRemoteLogger` is now canonical**; `RemoteLogger` is **deprecated**
+  (`@available(*, deprecated)`, still compiles/runs — its call sites now warn so usage can migrate
+  over time). Added `ReliableRemoteLogger.configure(...)` as the canonical, non-deprecated
+  configuration entry point (identical signature; still wires up both paths). Docs-only migration —
+  no API removed, fully backward-compatible.
 - **1.2.0** — added `ReliableRemoteLogger` (drop-proof path); `configure(device:branch:)` (additive,
   backward-compatible); server routes to per-device/per-branch split files while keeping the combined
   `remote-logs.txt`.

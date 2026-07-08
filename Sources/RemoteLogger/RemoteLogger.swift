@@ -1,24 +1,20 @@
 import Foundation
 import OSLog
 
-/// Fire-and-forget remote logger that sends structured logs to a Mac over Tailscale.
+/// **Deprecated — prefer ``ReliableRemoteLogger``.** Fire-and-forget remote logger that sends
+/// structured logs to a Mac over Tailscale.
 ///
-/// Configure once at app startup:
-/// ```
-/// RemoteLogger.configure(app: "MyApp")
-/// ```
+/// This is the legacy **fast path**: one fire-and-forget HTTP POST per line through an ephemeral
+/// `URLSession`, no retry. Under a dense burst its ~6-connections/host cap and short timeout cause
+/// some lines to compete, time out, and be **silently dropped** — the failure mode
+/// ``ReliableRemoteLogger`` was built to eliminate (ordered `seq=N`, retried FIFO delivery, plus an
+/// on-device mirror). New code should use `ReliableRemoteLogger`; existing call sites still compile
+/// and run, and can migrate over time.
 ///
-/// Then use anywhere:
-/// ```
-/// RemoteLogger.shared.info("Pulled 5 days", category: "sync-pull", extra: ["count": "5"])
-/// ```
-///
-/// This is the **fast path**: one fire-and-forget HTTP POST per line through an ephemeral
-/// `URLSession`, no retry. It's the right default for high-volume logging where the occasional
-/// dropped line under a dense burst is acceptable. When a trace must NOT drop a single line under a
-/// burst (e.g. an optimistic-UI-vs-refetch race), use ``ReliableRemoteLogger`` instead — it shares
-/// the same configuration (host/port/app/device/branch) but guarantees ordered, gap-detectable,
-/// drop-proof delivery.
+/// Both types share one ``RemoteLoggerConfig``, so a single
+/// ``ReliableRemoteLogger/configure(app:host:port:baseURL:device:branch:)`` at startup configures
+/// both paths.
+@available(*, deprecated, message: "Prefer ReliableRemoteLogger: ordered, gap-detectable, drop-proof delivery with an on-device mirror. RemoteLogger is fire-and-forget and silently drops lines under a dense burst. Configure via ReliableRemoteLogger.configure(...).")
 public final class RemoteLogger: Sendable {
     public static let shared = RemoteLogger()
 

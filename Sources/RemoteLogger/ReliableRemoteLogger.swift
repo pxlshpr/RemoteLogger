@@ -1,9 +1,14 @@
 import Foundation
 
-/// A **drop-proof** sibling to ``RemoteLogger`` for traces that must NOT lose a single line under a
-/// dense burst — the exact failure mode that defeats the fire-and-forget fast path (its ephemeral
-/// `URLSession` caps at ~6 connections/host with a short timeout and no retry, so a burst of
-/// hundreds of lines competes, times out, and silently drops some).
+/// The **canonical** remote logger — drop-proof delivery that must NOT lose a single line under a
+/// dense burst, the exact failure mode that defeats the deprecated fire-and-forget ``RemoteLogger``
+/// (its ephemeral `URLSession` caps at ~6 connections/host with a short timeout and no retry, so a
+/// burst of hundreds of lines competes, times out, and silently drops some).
+///
+/// Configure once at startup via ``configure(app:host:port:baseURL:device:branch:)`` — that single
+/// call wires up the shared ``RemoteLoggerConfig`` for both this logger and the legacy
+/// ``RemoteLogger``, so new code should reach for `ReliableRemoteLogger` and existing fast-path call
+/// sites can migrate over time.
 ///
 /// The mechanism (proven in the field on the #2009 add-burst-flicker trace, then extracted here so
 /// it's reusable across projects):
@@ -79,6 +84,36 @@ public final class ReliableRemoteLogger: @unchecked Sendable {
             self.fileHandle = try? FileHandle(forWritingTo: url)
             _ = try? self.fileHandle?.seekToEnd()
         }
+    }
+
+    // MARK: - Configuration
+
+    /// Configure remote logging. Call once at app startup. Configuration is shared with the legacy
+    /// ``RemoteLogger`` (both read the same ``RemoteLoggerConfig``), so this single call wires up
+    /// both the drop-proof and the fast path — there is no second endpoint to drift out of sync.
+    ///
+    /// This is the canonical configuration entry point; `RemoteLogger.configure(...)` still exists
+    /// but is deprecated alongside the rest of that type.
+    ///
+    /// - Parameters:
+    ///   - app: App name sent with every log entry (the server routes per-app on it).
+    ///   - host: Override the default Tailscale IP.
+    ///   - port: Override the default port.
+    ///   - baseURL: Full base URL (e.g. "https://host.ts.net"). When set, host/port are ignored.
+    ///   - device: Stable per-device id/tag sent with every entry so the server can route per-device.
+    ///   - branch: Branch/task tag (e.g. the clone's task number) sent with every entry so the
+    ///     server can route a single task's logs into their own file, isolated from concurrent work
+    ///     on other branches/devices.
+    public static func configure(
+        app: String,
+        host: String? = nil,
+        port: Int? = nil,
+        baseURL: String? = nil,
+        device: String? = nil,
+        branch: String? = nil
+    ) {
+        RemoteLoggerConfig.configure(app: app, host: host, port: port, baseURL: baseURL,
+                                     device: device, branch: branch)
     }
 
     // MARK: - Public API (mirrors RemoteLogger so any trace can be made drop-proof by swapping in)
