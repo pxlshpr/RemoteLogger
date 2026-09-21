@@ -12,7 +12,7 @@ POST to the same endpoint, so migration is a drop-in swap of the type name.
 
 | | `ReliableRemoteLogger` (canonical, drop-proof) | `RemoteLogger` (deprecated fast path) |
 |---|---|---|
-| Delivery | serialized FIFO, **retried with backoff**, never drops a line | fire-and-forget, one POST per line, **no retry** |
+| Delivery | serialized FIFO, **retried until acked**, never drops a line | fire-and-forget, one POST per line, **no retry** |
 | Ordering | strict (`seq=N` per line; single connection) | best-effort (ephemeral session, ~6 conns/host) |
 | On-device record | **file mirror** in `Caches/` (survives total network loss) | none |
 | Cost under a dense burst | buffers and drains in order | some lines time out and are silently dropped |
@@ -26,7 +26,7 @@ they interleave correctly in the server logs and route to the same files.
 ## Install (Swift Package Manager)
 
 ```swift
-.package(url: "https://github.com/pxlshpr/RemoteLogger", from: "1.3.0"),
+.package(url: "https://github.com/pxlshpr/RemoteLogger", from: "1.4.0"),
 // …
 .product(name: "RemoteLogger", package: "RemoteLogger"),
 ```
@@ -58,9 +58,32 @@ two paths. (`RemoteLogger.configure(...)` still exists but is deprecated alongsi
 | `baseURL` | — | full base URL (e.g. `https://host.ts.net`) for Tailscale Funnel / HTTPS; overrides host/port |
 | `device` | — (→ `unknown`) | stable per-device id/tag; enables per-device split files |
 | `branch` | — (→ `main`) | branch/task tag; enables per-branch split files |
+| `enabled` | `nil` → on in a `DEBUG` build, off otherwise | whether any line leaves the device at all (see below) |
 
 `device`/`branch` are sent only when set, so apps (and older builds) that don't pass them stay
 byte-compatible with the server's per-app fallback.
+
+### Off by default — unconfigured means silent (1.4.0)
+
+Until `configure(...)` runs, **nothing is sent, no mirror file is opened, and no retry loop
+starts**: `isEnabled` is false and every call returns after one atomic load (the `message`
+parameters are autoclosures, so the string is never built either). `configure(...)` switches
+logging on only when `enabled` resolves to true — `nil`, the default, means *on in a `DEBUG`
+build of the package, off in every other*, so an app that calls it unconditionally still ships
+silent from TestFlight and the App Store. Pass `enabled: true` to log from a build that is not
+`DEBUG` (an internal build behind a switch), `enabled: false` to silence a debug build.
+
+Two things follow from it:
+
+- Xcode defines `DEBUG` for a package only under a configuration named `Debug`. An app whose
+  debug configurations have other names (`Debug-Dev`, …) should gate the call on its **own**
+  `#if DEBUG` and pass `enabled: true` — that is what NutriKit does.
+- Anything whose only output is a log line — a heartbeat timer, a hang watchdog — should check
+  `ReliableRemoteLogger.isEnabled` before starting, so a silent build does not pay for it.
+
+Before 1.4.0 the default host was a default *state*: every build of every consumer, configured
+or not, POSTed cleartext to the dev Mac's Tailscale IP, and the reliable path retried forever
+from every App Store install (NutriKit #3252).
 
 ---
 
@@ -90,13 +113,14 @@ RemoteLogger.shared.info("legacy line", category: "sync-pull")
 - **Monotonic `seq=N` per line** — embedded in the message text *and* in `extra`. Any residual drop
   is **detectable** as a gap, and true order is recoverable even if the network reorders.
 - **Serialized single-connection FIFO sender** (`httpMaximumConnectionsPerHost = 1`), one request in
-  flight at a time, **retried with backoff** on failure — the line stays queued, never dropped, so a
+  flight at a time, **retried** 0.5 s after each failure — the line stays queued, never dropped, so a
   burst *buffers and drains in order* instead of overflowing the connection pool. The buffer is
   bounded (50k lines); on overflow the **oldest** are dropped and the `seq` gap reveals the loss.
 - **On-device file mirror** in `Caches/<mirrorFileName>` (default `reliable-remote.log`), appended
   synchronously on the logger's serial queue — a complete record even if the network drops
-  everything. Truncated on construction by default so each run starts clean (`truncateOnInit: false`
-  to append across runs).
+  everything. Opened on the first line written (a disabled logger leaves no file), truncated on
+  that first open by default so each run starts clean (`truncateOnInit: false` to append across
+  runs, bounded by `maxMirrorBytes` = 8 MB).
 
 This is the mechanism originally proven in the field (a NutriKit add-burst-flicker trace: 183 lines,
 `seq` 1–183, zero gaps under a burst that the fast path could not capture) and then extracted here so
@@ -191,6 +215,13 @@ detection mirrors the app's: `branch = basename(clone dir) after the first '-'`,
 
 ## Versioning
 
+- **1.4.0** — **off by default; unconfigured means silent.** `RemoteLoggerConfig` has a real off
+  state: until `configure(...)` runs nothing is sent, no mirror file is created and no retry loop
+  starts, and `configure(enabled:)` defaults to on only in a `DEBUG` build (NutriKit #3252).
+  `isEnabled` on both types; `message` parameters are autoclosures; the reliable mirror opens
+  lazily and an appending mirror is bounded by `maxMirrorBytes`. Source-compatible — every
+  existing `configure(...)` call and log call compiles unchanged; only release-build behaviour
+  changes (to silence).
 - **1.3.0** — **`ReliableRemoteLogger` is now canonical**; `RemoteLogger` is **deprecated**
   (`@available(*, deprecated)`, still compiles/runs — its call sites now warn so usage can migrate
   over time). Added `ReliableRemoteLogger.configure(...)` as the canonical, non-deprecated
