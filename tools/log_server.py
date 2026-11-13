@@ -212,10 +212,13 @@ class LogHandler(BaseHTTPRequestHandler):
         # flushes (/flushlogs) never clear it. All apps/devices/branches converge here
         # (that's the point: long-term evidence of residue cleanups + cache regrowth
         # across every install), so each line carries its origin and a full date.
-        if category.startswith("ck-"):
-            ck_line = (f"{day_str} {time_str} {level} "
-                       f"[{self._safe(app)}/{device}/{branch}] {cat_tag}{message}{extra_str}\n")
-            targets.append((os.path.join(self.log_dir, "cloudkit.log"), ck_line))
+        # NutriKit #2083: same for `restore-*` → restore.log — a restore-mode firing is
+        # evidence of a real data-loss event on some device and must survive routine flushes.
+        for prefix, aggregate in (("ck-", "cloudkit.log"), ("restore-", "restore.log")):
+            if category.startswith(prefix):
+                agg_line = (f"{day_str} {time_str} {level} "
+                            f"[{self._safe(app)}/{device}/{branch}] {cat_tag}{message}{extra_str}\n")
+                targets.append((os.path.join(self.log_dir, aggregate), agg_line))
 
         # One write+flush per line under the lock so concurrent requests
         # never interleave bytes inside a single log line.
